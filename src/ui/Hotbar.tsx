@@ -1,11 +1,16 @@
 import { useState, type ReactNode } from 'react';
 import {
   ArrowRight,
+  Atom,
+  ChevronsRight,
   Cog,
+  Cpu,
+  Factory,
   Flame,
   Gauge,
   GitFork,
   GitMerge,
+  Layers,
   Link2,
   Package,
   Pickaxe,
@@ -17,7 +22,10 @@ import {
 import { getRecipesForBuilding, ITEM_META } from '../engine/recipes';
 import {
   BUILDING_DEFS,
+  CRAFTING_BUILDING_TYPES,
   HOTBAR_BUILDINGS,
+  isBeltType,
+  isMinerType,
   MAX_WIRE_DISTANCE,
   PURITY_RATE,
   WIRE_COST,
@@ -31,14 +39,21 @@ import { useGameStore, world } from '../store/useGameStore';
 type HoverableSlot = BuildingType | 'wire';
 
 const ICONS: Partial<Record<BuildingType, ReactNode>> = {
-  miner: <Pickaxe className="h-5 w-5" />,
-  belt: <ArrowRight className="h-5 w-5" />,
-  smelter: <Flame className="h-5 w-5" />,
-  constructor: <Cog className="h-5 w-5" />,
-  splitter: <GitFork className="h-5 w-5" />,
-  merger: <GitMerge className="h-5 w-5" />,
-  generator: <Zap className="h-5 w-5" />,
-  pole: <RadioTower className="h-5 w-5" />,
+  miner: <Pickaxe className="h-4 w-4" />,
+  miner_mk2: <Pickaxe className="h-4 w-4 text-sky-300" />,
+  belt: <ArrowRight className="h-4 w-4" />,
+  belt_mk2: <ChevronsRight className="h-4 w-4 text-sky-300" />,
+  smelter: <Flame className="h-4 w-4" />,
+  foundry: <Flame className="h-4 w-4 text-red-300" />,
+  constructor: <Cog className="h-4 w-4" />,
+  assembler: <Layers className="h-4 w-4 text-indigo-300" />,
+  manufacturer: <Cpu className="h-4 w-4 text-purple-300" />,
+  splitter: <GitFork className="h-4 w-4" />,
+  merger: <GitMerge className="h-4 w-4" />,
+  generator: <Zap className="h-4 w-4" />,
+  coal_gen: <Factory className="h-4 w-4 text-teal-300" />,
+  nuclear_gen: <Atom className="h-4 w-4 text-lime-300" />,
+  pole: <RadioTower className="h-4 w-4" />,
 };
 
 const DIR_LABELS = ['N', 'E', 'S', 'O'];
@@ -49,7 +64,7 @@ const PURITY_OPTIONS: { id: Purity; label: string; accent: string }[] = [
   { id: 'pure', label: 'Pura', accent: 'text-amber-300 border-amber-400' },
 ];
 
-const BUILD_STOCK_ITEMS: ItemType[] = [
+const BASE_STOCK_ITEMS: ItemType[] = [
   'iron_plate',
   'iron_rod',
   'wire',
@@ -57,11 +72,24 @@ const BUILD_STOCK_ITEMS: ItemType[] = [
   'concrete',
 ];
 
+const ADVANCED_STOCK_ITEMS: ItemType[] = [
+  'reinforced_plate',
+  'steel_beam',
+  'steel_pipe',
+  'rotor',
+  'modular_frame',
+  'motor',
+  'circuit_board',
+  'heavy_frame',
+  'supercomputer',
+];
+
 export function Hotbar() {
   const selectedBuilding = useGameStore((s) => s.selectedBuilding);
   const dismantleMode = useGameStore((s) => s.dismantleMode);
   const wireMode = useGameStore((s) => s.wireMode);
   const rotation = useGameStore((s) => s.rotation);
+  const currentMilestoneIndex = useGameStore((s) => s.currentMilestoneIndex);
   const selectBuilding = useGameStore((s) => s.selectBuilding);
   const rotate = useGameStore((s) => s.rotate);
   const toggleDismantle = useGameStore((s) => s.toggleDismantle);
@@ -73,6 +101,19 @@ export function Hotbar() {
 
   const [hoveredSlot, setHoveredSlot] = useState<HoverableSlot | null>(null);
   const [minerPurity, setMinerPurity] = useState<Purity>('normal');
+
+  const unlockedBuildings = HOTBAR_BUILDINGS.filter(
+    (type) => currentMilestoneIndex >= BUILDING_DEFS[type].unlockTier
+  );
+
+  // Mostra le 5 risorse base + eventuali materiali avanzati già prodotti nell'HUB
+  const stockItems: ItemType[] = [
+    ...BASE_STOCK_ITEMS,
+    ...ADVANCED_STOCK_ITEMS.filter((item) => world.getItemCount(item) > 0).slice(
+      0,
+      3
+    ),
+  ];
 
   const renderCostBadges = (cost: BuildingCost[]) => (
     <div className="flex flex-wrap gap-1.5">
@@ -155,12 +196,13 @@ export function Hotbar() {
 
     const def = BUILDING_DEFS[slot];
     const affordable = world.canAfford(def.cost);
-    const recipes =
-      slot === 'smelter' || slot === 'constructor'
-        ? getRecipesForBuilding(slot)
-        : [];
-    const minerRate = PURITY_RATE[minerPurity];
-    const minerCycleSec = (60 / minerRate).toFixed(1);
+    const recipes = CRAFTING_BUILDING_TYPES.has(slot)
+      ? getRecipesForBuilding(slot)
+      : [];
+    const minerMult = def.minerMultiplier ?? 1;
+    const minerRate = PURITY_RATE[minerPurity] * minerMult;
+    const minerCycleSec = (60 / minerRate).toFixed(2);
+    const beltSpeed = def.beltSpeed ?? 60;
 
     return (
       <div className="space-y-2.5">
@@ -178,7 +220,7 @@ export function Hotbar() {
           )}
         </div>
 
-        {/* Costo materiali live (hai/serve) */}
+        {/* Costo materiali live */}
         <div className="space-y-1">
           <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             <span>Costo (hai / serve)</span>
@@ -189,7 +231,7 @@ export function Hotbar() {
           {renderCostBadges(def.cost)}
         </div>
 
-        {/* Energia & Connessioni */}
+        {/* Energia & Portata/Attacchi */}
         <div className="grid grid-cols-2 gap-1.5 text-[11px]">
           <div className="rounded bg-zinc-900/90 px-2 py-1.5">
             <div className="flex items-center gap-1 text-[10px] text-zinc-500">
@@ -221,17 +263,17 @@ export function Hotbar() {
             <div className="mt-0.5 font-mono font-semibold text-zinc-200">
               {def.maxConnections > 0
                 ? `Max ${def.maxConnections}`
-                : '60 item/min'}
+                : `${beltSpeed} item/min`}
             </div>
           </div>
         </div>
 
-        {/* Produzione Miner con selettore purezza */}
-        {slot === 'miner' && (
+        {/* Produzione Miner Mk.1 / Mk.2 */}
+        {isMinerType(slot) && (
           <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-900/75 p-2">
             <div className="flex items-center justify-between text-[10px]">
               <span className="font-semibold uppercase tracking-wider text-zinc-400">
-                Purezza vena
+                Purezza vena ({minerMult}×)
               </span>
               <span className="font-mono text-zinc-500">
                 Ciclo: {minerCycleSec}s
@@ -267,41 +309,37 @@ export function Hotbar() {
                 {minerRate} item/min
               </span>
             </div>
-
-            {minerRate > 60 && (
-              <div className="rounded bg-amber-500/10 px-2 py-1 text-[10px] text-amber-300/90">
-                Supera il limite del Nastro Mk.1 (60/min).
-              </div>
-            )}
           </div>
         )}
 
+        {/* Ricette multi-ingresso */}
         {recipes.length > 0 && (
           <div className="space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-              Produzione (ricette)
+              Ricette ({recipes.length})
             </div>
-            <div className="max-h-32 space-y-1 overflow-y-auto pr-0.5">
+            <div className="max-h-36 space-y-1 overflow-y-auto pr-0.5">
               {recipes.map((r) => {
-                const inMeta = ITEM_META[r.input.item];
                 const outMeta = ITEM_META[r.output.item];
                 const rate = Math.round((r.output.count / r.durationSec) * 60);
                 return (
                   <div
                     key={r.id}
-                    className="flex items-center justify-between rounded bg-zinc-900/80 px-2 py-1 text-[10px]"
+                    className="flex items-center justify-between gap-2 rounded bg-zinc-900/80 px-2 py-1 text-[10px]"
                   >
-                    <span className="flex items-center gap-1 text-zinc-300">
+                    <span className="flex flex-wrap items-center gap-1 text-zinc-300">
                       <span>
-                        {r.input.count} {inMeta.shortName}
+                        {r.inputs
+                          .map((i) => `${i.count} ${ITEM_META[i.item].shortName}`)
+                          .join(' + ')}
                       </span>
-                      <ArrowRight className="h-2.5 w-2.5 text-zinc-500" />
+                      <ArrowRight className="h-2.5 w-2.5 shrink-0 text-zinc-500" />
                       <span className="font-medium text-white">
                         {r.output.count} {outMeta.shortName}
                       </span>
                     </span>
-                    <span className="font-mono font-semibold text-emerald-400">
-                      {rate}/min
+                    <span className="shrink-0 font-mono font-semibold text-emerald-400">
+                      {rate}/m
                     </span>
                   </div>
                 );
@@ -310,10 +348,17 @@ export function Hotbar() {
           </div>
         )}
 
-        {slot === 'generator' && (
+        {isBeltType(slot) && slot === 'belt_mk2' && (
+          <div className="rounded-lg border border-sky-500/25 bg-sky-500/10 px-2.5 py-1.5 text-[11px] text-sky-300">
+            Trascina direttamente sui Nastri Mk.1 per aggiornarli al volo.
+          </div>
+        )}
+
+        {def.powerMW < 0 && (
           <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] text-emerald-300">
-            Alimenta fino a <span className="font-mono font-bold">6 Miner</span>{' '}
-            o <span className="font-mono font-bold">7 Smelter/Constr.</span>
+            Genera <span className="font-mono font-bold">{-def.powerMW} MW</span>{' '}
+            con <span className="font-mono font-bold">{def.maxConnections}</span>{' '}
+            attacchi cavo.
           </div>
         )}
 
@@ -333,7 +378,7 @@ export function Hotbar() {
 
   return (
     <>
-      {/* Hotbar Centrale */}
+      {/* Hotbar Centrale (mostra gli edifici sbloccati dal Tier corrente) */}
       <div className="pointer-events-none fixed bottom-4 left-0 right-0 z-10 flex justify-center px-4">
         <style>{`
           @keyframes fw-popup-rise {
@@ -348,8 +393,8 @@ export function Hotbar() {
           }
         `}</style>
 
-        <div className="pointer-events-auto flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-950/92 p-2 shadow-2xl backdrop-blur">
-          {HOTBAR_BUILDINGS.map((type) => {
+        <div className="pointer-events-auto flex max-w-[calc(100vw-24rem)] flex-wrap items-center justify-center gap-1 rounded-xl border border-zinc-800 bg-zinc-950/92 p-1.5 shadow-2xl backdrop-blur">
+          {unlockedBuildings.map((type) => {
             const def = BUILDING_DEFS[type];
             const active =
               selectedBuilding === type && !dismantleMode && !wireMode;
@@ -367,7 +412,7 @@ export function Hotbar() {
               >
                 {isHovered && (
                   <div
-                    className="absolute bottom-full left-1/2 z-30 w-68 pb-3"
+                    className="absolute bottom-full left-1/2 z-30 w-72 pb-3"
                     style={{ animation: 'fw-popup-rise 150ms ease-out forwards' }}
                   >
                     <div className="relative rounded-xl border border-zinc-700/90 bg-zinc-950/96 p-3 shadow-[0_12px_40px_rgba(0,0,0,0.85)] backdrop-blur-xl">
@@ -379,7 +424,7 @@ export function Hotbar() {
 
                 <button
                   onClick={() => selectBuilding(type)}
-                  className={`relative flex h-14 w-15 flex-col items-center justify-center rounded-lg border transition ${
+                  className={`relative flex h-13 w-13 flex-col items-center justify-center rounded-lg border transition ${
                     active
                       ? affordable
                         ? 'border-amber-400 bg-amber-500/20 text-amber-300'
@@ -389,17 +434,19 @@ export function Hotbar() {
                         : 'border-zinc-800/80 bg-zinc-900/45 text-zinc-500 hover:border-red-500/50 hover:text-zinc-300'
                   }`}
                 >
-                  <span className="absolute top-1 left-1.5 font-mono text-[10px] text-zinc-500">
-                    {def.shortcut}
-                  </span>
+                  {def.shortcut && (
+                    <span className="absolute top-0.5 left-1 font-mono text-[9px] text-zinc-500">
+                      {def.shortcut}
+                    </span>
+                  )}
                   {!affordable && (
                     <span
-                      className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-red-500"
+                      className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-red-500"
                       title="Risorse insufficienti"
                     />
                   )}
                   {ICONS[type]}
-                  <span className="mt-1 text-[10px] font-medium">
+                  <span className="mt-0.5 max-w-full truncate px-0.5 text-[9.5px] font-medium">
                     {def.shortName}
                   </span>
                 </button>
@@ -417,7 +464,7 @@ export function Hotbar() {
           >
             {hoveredSlot === 'wire' && (
               <div
-                className="absolute bottom-full left-1/2 z-30 w-68 pb-3"
+                className="absolute bottom-full left-1/2 z-30 w-72 pb-3"
                 style={{ animation: 'fw-popup-rise 150ms ease-out forwards' }}
               >
                 <div className="relative rounded-xl border border-zinc-700/90 bg-zinc-950/96 p-3 shadow-[0_12px_40px_rgba(0,0,0,0.85)] backdrop-blur-xl">
@@ -429,7 +476,7 @@ export function Hotbar() {
 
             <button
               onClick={toggleWireMode}
-              className={`relative flex h-14 w-15 flex-col items-center justify-center rounded-lg border transition ${
+              className={`relative flex h-13 w-13 flex-col items-center justify-center rounded-lg border transition ${
                 wireMode
                   ? wireAffordable
                     ? 'border-yellow-400 bg-yellow-500/20 text-yellow-300'
@@ -439,71 +486,71 @@ export function Hotbar() {
                     : 'border-zinc-800/80 bg-zinc-900/45 text-zinc-500 hover:border-red-500/50 hover:text-zinc-300'
               }`}
             >
-              <span className="absolute top-1 left-1.5 font-mono text-[10px] text-zinc-500">
+              <span className="absolute top-0.5 left-1 font-mono text-[9px] text-zinc-500">
                 9
               </span>
               {!wireAffordable && (
                 <span
-                  className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-red-500"
+                  className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-red-500"
                   title="Cavi esauriti"
                 />
               )}
-              <Link2 className="h-5 w-5" />
-              <span className="mt-1 text-[10px] font-medium">Cavo</span>
+              <Link2 className="h-4 w-4" />
+              <span className="mt-0.5 text-[9.5px] font-medium">Cavo</span>
             </button>
           </div>
 
-          <div className="mx-1 h-10 w-px bg-zinc-800" />
+          <div className="mx-0.5 h-9 w-px bg-zinc-800" />
 
           {/* Pulsante Ruota */}
           <button
             onClick={rotate}
             title="Ruota edificio (R)"
-            className="relative flex h-14 w-13 flex-col items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900/80 text-zinc-300 transition hover:border-zinc-600 hover:text-white"
+            className="relative flex h-13 w-12 flex-col items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900/80 text-zinc-300 transition hover:border-zinc-600 hover:text-white"
           >
-            <span className="absolute top-1 left-1.5 font-mono text-[10px] text-zinc-500">
+            <span className="absolute top-0.5 left-1 font-mono text-[9px] text-zinc-500">
               R
             </span>
             <RotateCw className="h-4 w-4" />
-            <span className="mt-1 font-mono text-[10px] text-amber-400">
+            <span className="mt-0.5 font-mono text-[10px] text-amber-400">
               {DIR_LABELS[rotation]}
             </span>
           </button>
 
-          {/* Pulsante Smantella (Rimborso 100%) */}
+          {/* Pulsante Smantella */}
           <button
             onClick={toggleDismantle}
             title="Modalità Smantella (X) — Rimborsa il 100% dei materiali"
-            className={`relative flex h-14 w-15 flex-col items-center justify-center rounded-lg border transition ${
+            className={`relative flex h-13 w-13 flex-col items-center justify-center rounded-lg border transition ${
               dismantleMode
                 ? 'border-red-500 bg-red-500/20 text-red-400'
                 : 'border-zinc-800 bg-zinc-900/80 text-zinc-300 hover:border-zinc-600 hover:text-white'
             }`}
           >
-            <span className="absolute top-1 left-1.5 font-mono text-[10px] text-zinc-500">
+            <span className="absolute top-0.5 left-1 font-mono text-[9px] text-zinc-500">
               X
             </span>
             <Trash2 className="h-4 w-4" />
-            <span className="mt-1 text-[10px] font-medium">Smantella</span>
+            <span className="mt-0.5 text-[9.5px] font-medium">Smant.</span>
           </button>
         </div>
       </div>
 
       {/* Pannello Scorte Costruzione (in basso a destra) */}
       <div
-        className="fixed bottom-4 right-4 z-10 hidden items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/92 px-3 py-2 shadow-2xl backdrop-blur lg:flex"
-        title="Materiali da costruzione disponibili nell'HUB (smantellare rimborsa il 100%)"
+        className="fixed bottom-4 right-4 z-10 hidden items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/92 px-3 py-2 shadow-2xl backdrop-blur xl:flex"
+        title="Materiali disponibili nell'HUB (smantellare rimborsa il 100%)"
       >
         <Package className="h-4 w-4 shrink-0 text-amber-400" />
         <div className="flex items-center gap-1.5">
-          {BUILD_STOCK_ITEMS.map((item) => {
+          {stockItems.map((item) => {
             const meta = ITEM_META[item];
             const count = world.getItemCount(item);
             return (
               <div
                 key={item}
                 title={meta.name}
-                className={`flex flex-col items-center rounded-md border px-2 py-1 min-w-[46px] ${
+                className={`flex min-w-[44px] flex-col items-center rounded-md border px-1.5 py-1 ${
                   count === 0
                     ? 'border-red-500/40 bg-red-950/25'
                     : 'border-zinc-800 bg-zinc-900/80'
@@ -517,7 +564,7 @@ export function Hotbar() {
                   <span>{meta.shortName}</span>
                 </div>
                 <span
-                  className={`font-mono text-xs font-bold ${
+                  className={`font-mono text-xs font-bold tabular-nums ${
                     count === 0 ? 'text-red-400' : 'text-zinc-100'
                   }`}
                 >

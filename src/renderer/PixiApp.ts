@@ -1,12 +1,24 @@
 import { Application, Container } from 'pixi.js';
 import {
   BUILDING_DEFS,
+  CRAFTING_BUILDING_TYPES,
   HOTBAR_BUILDINGS,
+  isBeltType,
+  WIRE_COST,
+  type BuildingType,
   type Direction,
 } from '../engine/types';
-import { simulation, useGameStore, world } from '../store/useGameStore';
+import {
+  simulation,
+  useGameStore,
+  world,
+  type CameraViewport,
+} from '../store/useGameStore';
 import { BeltRenderer } from './BeltRenderer';
 import { GridRenderer, TILE_SIZE } from './GridRenderer';
+
+const MIN_ZOOM = 0.09; // Vista satellitare sull'intero continente 256x256
+const MAX_ZOOM = 2.6;
 
 export class PixiApp {
   private app = new Application();
@@ -25,6 +37,7 @@ export class PixiApp {
   private panMoved = false;
   private lastPointer = { x: 0, y: 0 };
   private lastBeltTile: { x: number; y: number } | null = null;
+  private lastReportedVp: CameraViewport | null = null;
   private hudAccumMs = 0;
   private elapsedSec = 0;
   private unsubscribeStore: (() => void) | null = null;
@@ -53,6 +66,7 @@ export class PixiApp {
 
     this.gridRenderer = new GridRenderer(world);
     this.beltRenderer = new BeltRenderer(world);
+    this.gridRenderer.setAltIconsVisible(useGameStore.getState().showAltIcons);
 
     this.worldContainer.addChild(this.gridRenderer.root);
     this.worldContainer.addChild(this.beltRenderer.root);
@@ -63,8 +77,18 @@ export class PixiApp {
 
     this.unsubscribeStore = useGameStore.subscribe((state, prev) => {
       if (!this.gridRenderer) return;
+
       if (state.worldVersion !== prev.worldVersion) {
         this.gridRenderer.drawBuildings();
+      }
+      if (state.showAltIcons !== prev.showAltIcons) {
+        this.gridRenderer.setAltIconsVisible(state.showAltIcons);
+      }
+      if (
+        state.cameraTarget &&
+        state.cameraTarget.seq !== prev.cameraTarget?.seq
+      ) {
+        this.panToTile(state.cameraTarget.x, state.cameraTarget.y);
       }
       if (
         state.hoveredTile !== prev.hoveredTile ||
@@ -87,18 +111,32 @@ export class PixiApp {
     });
 
     this.app.ticker.add((ticker) => {
-      const speed = 10 * ticker.deltaTime;
+      const scale = this.worldContainer.scale.x;
+      const turbo =
+        this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 2.4 : 1;
+      const zoomFactor = Math.min(2.6, Math.max(0.85, 1 / Math.sqrt(scale)));
+      const speed = 11 * zoomFactor * turbo * ticker.deltaTime;
+
+      let cameraMoved = false;
       if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) {
         this.worldContainer.y += speed;
+        cameraMoved = true;
       }
       if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) {
         this.worldContainer.y -= speed;
+        cameraMoved = true;
       }
       if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) {
         this.worldContainer.x += speed;
+        cameraMoved = true;
       }
       if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) {
         this.worldContainer.x -= speed;
+        cameraMoved = true;
+      }
+
+      if (cameraMoved) {
+        this.syncCameraViewport();
       }
 
       const dtSec = ticker.deltaMS / 1000;
@@ -115,17 +153,57 @@ export class PixiApp {
       if (this.hudAccumMs >= 200) {
         this.hudAccumMs = 0;
         this.gridRenderer?.drawWires();
+        this.syncCameraViewport();
         state.syncHud();
       }
     });
   }
 
   centerCamera() {
-    const centerPx = (world.size * TILE_SIZE) / 2;
+    const centerTile = world.size / 2;
     const scale = 1.15;
     this.worldContainer.scale.set(scale);
-    this.worldContainer.x = this.app.screen.width / 2 - centerPx * scale;
-    this.worldContainer.y = this.app.screen.height / 2 - centerPx * scale;
+    this.gridRenderer?.setZoomLevel(scale);
+    this.panToTile(centerTile, centerTile);
+  }
+
+  panToTile(tileX: number, tileY: number) {
+    const scale = this.worldContainer.scale.x;
+    const worldPxX = (tileX + 0.5) * TILE_SIZE;
+    const worldPxY = (tileY + 0.5) * TILE_SIZE;
+    this.worldContainer.x = this.app.screen.width / 2 - worldPxX * scale;
+    this.worldContainer.y = this.app.screen.height / 2 - worldPxY * scale;
+    this.syncCameraViewport();
+  }
+
+  private syncCameraViewport() {
+    if (!this.initialized) return;
+    const scale = this.worldContainer.scale.x;
+    const tilePx = TILE_SIZE * scale;
+    if (tilePx <= 0) return;
+
+    const vp: CameraViewport = {
+      x: -this.worldContainer.x / tilePx,
+      y: -this.worldContainer.y / tilePx,
+      w: this.app.screen.width / tilePx,
+      h: this.app.screen.height / tilePx,
+      scale,
+    };
+
+    const prev = this.lastReportedVp;
+    if (
+      prev &&
+      Math.abs(vp.x - prev.x) < 0.2 &&
+      Math.abs(vp.y - prev.y) < 0.2 &&
+      Math.abs(vp.w - prev.w) < 0.2 &&
+      Math.abs(vp.h - prev.h) < 0.2 &&
+      Math.abs(vp.scale - prev.scale) < 0.005
+    ) {
+      return;
+    }
+
+    this.lastReportedVp = vp;
+    useGameStore.getState().setCameraViewport(vp);
   }
 
   private screenToTile(clientX: number, clientY: number) {
@@ -168,16 +246,25 @@ export class PixiApp {
       return;
     }
 
-    if (world.addWire(state.wireStartId, target.id)) {
-      state.setWireStartId(null);
+    const startId = state.wireStartId;
+    if (world.addWire(startId, target.id)) {
+      const startB = world.getBuildingById(startId);
+      const keepStart =
+        startB &&
+        BUILDING_DEFS[startB.type].maxConnections > 1 &&
+        world.getConnectionCount(startId) <
+          BUILDING_DEFS[startB.type].maxConnections &&
+        world.canAfford(WIRE_COST);
+
+      state.setWireStartId(keepStart ? startId : null);
       state.notifyWorldChanged();
     } else {
       state.setWireStartId(target.id);
     }
   }
 
-  /** Trascinamento intelligente dei nastri: ruota e curva automaticamente a 90° */
-  private stepBeltDrag(targetX: number, targetY: number) {
+  /** Trascinamento intelligente per Nastro Mk.1 e Mk.2 (incl. upgrade rapido lungo una linea) */
+  private stepBeltDrag(targetX: number, targetY: number, beltType: BuildingType) {
     if (!this.lastBeltTile) return;
 
     let cx = this.lastBeltTile.x;
@@ -192,7 +279,7 @@ export class PixiApp {
 
       const prevBelt = world.getBuilding(cx, cy);
       const continueHorizontal =
-        prevBelt?.type === 'belt'
+        prevBelt && isBeltType(prevBelt.type)
           ? prevBelt.dir === 1 || prevBelt.dir === 3
           : Math.abs(dx) >= Math.abs(dy);
 
@@ -212,29 +299,35 @@ export class PixiApp {
       const nx = cx + sx;
       const ny = cy + sy;
 
-      if (world.canPlace('belt', nx, ny)) {
-        if (prevBelt?.type === 'belt') {
+      if (world.canPlace(beltType, nx, ny)) {
+        const existingAtNext = world.getBuilding(nx, ny);
+        const isUpgradingBelt = Boolean(
+          existingAtNext && isBeltType(existingAtNext.type)
+        );
+
+        if (!isUpgradingBelt && prevBelt && isBeltType(prevBelt.type)) {
           prevBelt.dir = stepDir;
         }
-        world.placeBuilding('belt', nx, ny, stepDir);
-        useGameStore.getState().setRotation(stepDir);
+        world.placeBuilding(beltType, nx, ny, stepDir);
+        if (!isUpgradingBelt) {
+          useGameStore.getState().setRotation(stepDir);
+        }
         cx = nx;
         cy = ny;
         changed = true;
       } else {
-        // Se trascini dentro una macchina o un altro nastro, aggancia l'uscita automaticamente
         const target = world.getBuilding(nx, ny);
         const opposite = ((stepDir + 2) % 4) as Direction;
         const isFeedingBack =
-          target?.type === 'belt' && target.dir === opposite;
+          target && isBeltType(target.type) && target.dir === opposite;
 
         if (
           target &&
           !isFeedingBack &&
-          prevBelt?.type === 'belt' &&
-          (target.type === 'belt' ||
-            target.type === 'smelter' ||
-            target.type === 'constructor' ||
+          prevBelt &&
+          isBeltType(prevBelt.type) &&
+          (isBeltType(target.type) ||
+            CRAFTING_BUILDING_TYPES.has(target.type) ||
             target.type === 'splitter' ||
             target.type === 'merger' ||
             target.type === 'hub')
@@ -275,15 +368,15 @@ export class PixiApp {
       return;
     }
 
-    if (state.selectedBuilding === 'belt') {
-      if (world.placeBuilding('belt', x, y, state.rotation)) {
+    if (state.selectedBuilding && isBeltType(state.selectedBuilding)) {
+      if (world.placeBuilding(state.selectedBuilding, x, y, state.rotation)) {
         this.lastBeltTile = { x, y };
         state.notifyWorldChanged();
         return;
       }
 
       const existing = world.getBuilding(x, y);
-      if (existing?.type === 'belt') {
+      if (existing && isBeltType(existing.type)) {
         this.lastBeltTile = { x, y };
         return;
       }
@@ -302,7 +395,7 @@ export class PixiApp {
 
       if (isClick) {
         const existing = world.getBuilding(x, y);
-        if (existing && existing.type !== 'belt') {
+        if (existing && !isBeltType(existing.type)) {
           state.setInspectedTile({ x, y });
         }
       }
@@ -340,6 +433,7 @@ export class PixiApp {
       this.worldContainer.x += dx;
       this.worldContainer.y += dy;
       this.lastPointer = { x: e.clientX, y: e.clientY };
+      this.syncCameraViewport();
       return;
     }
 
@@ -351,12 +445,13 @@ export class PixiApp {
       if (this.isPainting) {
         const state = useGameStore.getState();
         if (
-          state.selectedBuilding === 'belt' &&
+          state.selectedBuilding &&
+          isBeltType(state.selectedBuilding) &&
           !state.dismantleMode &&
           !state.wireMode &&
           this.lastBeltTile
         ) {
-          this.stepBeltDrag(tile.x, tile.y);
+          this.stepBeltDrag(tile.x, tile.y, state.selectedBuilding);
         } else {
           this.applyToolAt(tile.x, tile.y, false);
         }
@@ -385,8 +480,8 @@ export class PixiApp {
     const my = e.clientY - rect.top;
 
     const oldScale = this.worldContainer.scale.x;
-    const factor = e.deltaY < 0 ? 1.12 : 0.89;
-    const newScale = Math.min(2.6, Math.max(0.35, oldScale * factor));
+    const factor = e.deltaY < 0 ? 1.14 : 0.87;
+    const newScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, oldScale * factor));
 
     const wx = (mx - this.worldContainer.x) / oldScale;
     const wy = (my - this.worldContainer.y) / oldScale;
@@ -394,6 +489,9 @@ export class PixiApp {
     this.worldContainer.scale.set(newScale);
     this.worldContainer.x = mx - wx * newScale;
     this.worldContainer.y = my - wy * newScale;
+
+    this.gridRenderer?.setZoomLevel(newScale);
+    this.syncCameraViewport();
   };
 
   private onContextMenu = (e: MouseEvent) => {
@@ -406,7 +504,33 @@ export class PixiApp {
     const state = useGameStore.getState();
 
     if (e.code === 'KeyR') {
+      if (
+        !state.selectedBuilding &&
+        !state.dismantleMode &&
+        !state.wireMode &&
+        state.hoveredTile
+      ) {
+        if (world.rotateBuilding(state.hoveredTile.x, state.hoveredTile.y)) {
+          state.notifyWorldChanged();
+          return;
+        }
+      }
       state.rotate();
+    } else if (e.code === 'KeyQ') {
+      if (state.hoveredTile) {
+        const existing = world.getBuilding(
+          state.hoveredTile.x,
+          state.hoveredTile.y
+        );
+        if (existing && existing.type !== 'hub') {
+          state.pickBuilding(existing.type, existing.dir);
+          return;
+        }
+      }
+      state.clearTool();
+    } else if (e.code === 'AltLeft') {
+      e.preventDefault();
+      state.toggleAltIcons();
     } else if (e.code === 'KeyX') {
       state.toggleDismantle();
     } else if (e.code === 'Escape') {
@@ -419,9 +543,15 @@ export class PixiApp {
       state.togglePause();
     } else if (e.key === '9') {
       state.toggleWireMode();
-    } else if (e.key >= '1' && e.key <= String(HOTBAR_BUILDINGS.length)) {
-      const idx = Number(e.key) - 1;
-      state.selectBuilding(HOTBAR_BUILDINGS[idx]);
+    } else if (e.key >= '1' && e.key <= '8') {
+      const match = HOTBAR_BUILDINGS.find(
+        (type) =>
+          BUILDING_DEFS[type].shortcut === e.key &&
+          state.currentMilestoneIndex >= BUILDING_DEFS[type].unlockTier
+      );
+      if (match) {
+        state.selectBuilding(match);
+      }
     }
   };
 

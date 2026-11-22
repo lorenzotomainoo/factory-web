@@ -7,6 +7,9 @@ import {
 } from '../engine/recipes';
 import { Simulation } from '../engine/Simulation';
 import {
+  BUILDING_DEFS,
+  CRAFTING_BUILDING_TYPES,
+  isMinerType,
   PURITY_RATE,
   type BuildingType,
   type Direction,
@@ -24,10 +27,17 @@ interface GameSavePayload {
   world: WorldSaveData;
 }
 
+export interface CameraViewport {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  scale: number;
+}
+
 export const world = new World(256);
 export const simulation = new Simulation(world);
 
-// Carica automaticamente l'eventuale partita salvata all'avvio
 function loadInitialSave(): {
   hasSavedGame: boolean;
   lastSavedAt: number | null;
@@ -71,11 +81,11 @@ function loadInitialSave(): {
 
 const initialSave = loadInitialSave();
 
-// Tracciamento finestra mobile (30s) sincronizzato subito col valore caricato
 let lastTotalDelivered = world.totalDeliveredToHub;
 const hubDeliveryEvents: { time: number; count: number }[] = [];
 const RATE_WINDOW_MS = 30_000;
 let saveToastTimer: number | null = null;
+let cameraTargetSeq = 0;
 
 function computeProductionMetrics(paused: boolean): {
   factoryItemsPerMin: number;
@@ -87,29 +97,31 @@ function computeProductionMetrics(paused: boolean): {
 
   if (!paused) {
     for (const b of world.buildings.values()) {
-      if (!b.powered) continue;
+      if (!b.powered || b.fuseBlown) continue;
 
-      if (b.type === 'miner') {
+      if (isMinerType(b.type)) {
         const node = world.getNode(b.x, b.y);
         if (!node) continue;
         const item = RESOURCE_TO_ITEM[node.type];
         const outCount = b.outputBuffer?.[item] ?? 0;
         if (outCount < 50) {
-          const rate = PURITY_RATE[node.purity];
+          const mult = BUILDING_DEFS[b.type].minerMultiplier ?? 1;
+          const rate = PURITY_RATE[node.purity] * mult;
           factoryItemsPerMin += rate;
           itemRates[item] = (itemRates[item] ?? 0) + rate;
         }
-      } else if (b.type === 'smelter' || b.type === 'constructor') {
+      } else if (CRAFTING_BUILDING_TYPES.has(b.type)) {
         if (!b.recipeId) continue;
         const recipe = RECIPES[b.recipeId];
         if (!recipe) continue;
 
-        const hasInput =
-          (b.inputBuffer?.[recipe.input.item] ?? 0) >= recipe.input.count;
+        const hasAllInputs = recipe.inputs.every(
+          (req) => (b.inputBuffer?.[req.item] ?? 0) >= req.count
+        );
         const outCount = b.outputBuffer?.[recipe.output.item] ?? 0;
         const hasSpace = outCount + recipe.output.count <= 50;
 
-        if ((b.progress ?? 0) > 0 || (hasInput && hasSpace)) {
+        if ((b.progress ?? 0) > 0 || (hasAllInputs && hasSpace)) {
           const rate = Math.round((recipe.output.count / recipe.durationSec) * 60);
           factoryItemsPerMin += rate;
           itemRates[recipe.output.item] =
@@ -164,6 +176,11 @@ interface GameStore {
   hoveredTile: { x: number; y: number } | null;
   inspectedTile: { x: number; y: number } | null;
   paused: boolean;
+  showAltIcons: boolean;
+
+  // Camera & Minimappa
+  cameraViewport: CameraViewport;
+  cameraTarget: { x: number; y: number; seq: number } | null;
 
   worldVersion: number;
   hudTick: number;
@@ -182,6 +199,7 @@ interface GameStore {
   saveToast: string | null;
 
   selectBuilding: (type: BuildingType | null) => void;
+  pickBuilding: (type: BuildingType, dir: Direction) => void;
   rotate: () => void;
   setRotation: (dir: Direction) => void;
   toggleDismantle: () => void;
@@ -189,18 +207,21 @@ interface GameStore {
   setWireStartId: (id: string | null) => void;
   clearTool: () => void;
   togglePause: () => void;
+  toggleAltIcons: () => void;
   setHoveredTile: (tile: { x: number; y: number } | null) => void;
   setInspectedTile: (tile: { x: number; y: number } | null) => void;
   setBuildingRecipe: (x: number, y: number, recipeId: string) => void;
+  setCameraViewport: (vp: CameraViewport) => void;
+  panCameraTo: (x: number, y: number) => void;
   completeMilestone: () => boolean;
-  saveGame: (isAuto?: boolean) => boolean;
+  saveGame: (isAuto?: boolean, customToast?: string) => boolean;
   clearSavedGame: () => void;
   notifyWorldChanged: () => void;
   syncHud: () => void;
 }
 
 export const useGameStore = create<GameStore>((set, get) => ({
-  selectedBuilding: 'belt',
+  selectedBuilding: null,
   rotation: 1,
   dismantleMode: false,
   wireMode: false,
@@ -208,6 +229,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
   hoveredTile: null,
   inspectedTile: null,
   paused: false,
+  showAltIcons: true,
+
+  cameraViewport: { x: 112, y: 118, w: 32, h: 20, scale: 1.15 },
+  cameraTarget: null,
 
   worldVersion: 0,
   hudTick: 0,
@@ -224,11 +249,40 @@ export const useGameStore = create<GameStore>((set, get) => ({
   saveToast: null,
 
   selectBuilding: (type) =>
-    set({
-      selectedBuilding: type,
-      dismantleMode: false,
-      wireMode: false,
-      wireStartId: null,
+    set((state) => {
+      if (
+        type !== null &&
+        state.currentMilestoneIndex < BUILDING_DEFS[type].unlockTier
+      ) {
+        return state;
+      }
+
+      const isAlreadySelected =
+        type !== null &&
+        state.selectedBuilding === type &&
+        !state.dismantleMode &&
+        !state.wireMode;
+
+      return {
+        selectedBuilding: isAlreadySelected ? null : type,
+        dismantleMode: false,
+        wireMode: false,
+        wireStartId: null,
+      };
+    }),
+
+  pickBuilding: (type, dir) =>
+    set((state) => {
+      if (state.currentMilestoneIndex < BUILDING_DEFS[type].unlockTier) {
+        return state;
+      }
+      return {
+        selectedBuilding: type,
+        rotation: dir,
+        dismantleMode: false,
+        wireMode: false,
+        wireStartId: null,
+      };
     }),
 
   rotate: () =>
@@ -267,6 +321,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   togglePause: () => set((state) => ({ paused: !state.paused })),
 
+  toggleAltIcons: () => set((state) => ({ showAltIcons: !state.showAltIcons })),
+
   setHoveredTile: (tile) => set({ hoveredTile: tile }),
 
   setInspectedTile: (tile) => set({ inspectedTile: tile }),
@@ -279,6 +335,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }));
     }
   },
+
+  setCameraViewport: (vp) => set({ cameraViewport: vp }),
+
+  panCameraTo: (x, y) =>
+    set({
+      cameraTarget: {
+        x: Math.max(0, Math.min(world.size - 1, x)),
+        y: Math.max(0, Math.min(world.size - 1, y)),
+        seq: ++cameraTargetSeq,
+      },
+    }),
 
   completeMilestone: () => {
     const state = get();
@@ -310,12 +377,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
       worldVersion: s.worldVersion + 1,
     }));
 
-    // Salva subito il traguardo raggiunto
-    get().saveGame(true);
+    const unlockMsg =
+      milestone.unlocks && milestone.unlocks.length > 0
+        ? `${milestone.tier} completato · Sbloccato: ${milestone.unlocks.join(', ')}`
+        : `${milestone.tier} completato!`;
+
+    get().saveGame(true, unlockMsg);
     return true;
   },
 
-  saveGame: (isAuto = false) => {
+  saveGame: (isAuto = false, customToast?: string) => {
     try {
       const now = Date.now();
       const payload: GameSavePayload = {
@@ -333,13 +404,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
       set({
         hasSavedGame: true,
         lastSavedAt: now,
-        saveToast: isAuto ? 'Autosave completato' : 'Partita salvata',
+        saveToast:
+          customToast ?? (isAuto ? 'Autosave completato' : 'Partita salvata'),
       });
 
       saveToastTimer = window.setTimeout(() => {
         set({ saveToast: null });
         saveToastTimer = null;
-      }, 2800);
+      }, customToast ? 4200 : 2800);
 
       return true;
     } catch {

@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Factory,
+  Lock,
   MapPin,
   Pause,
   Play,
@@ -100,12 +101,12 @@ export function TopBar() {
   }
 
   return (
-    <div className="pointer-events-none fixed top-0 left-0 right-0 z-20 flex flex-wrap items-start justify-between gap-2 p-3">
+    <div className="pointer-events-none fixed top-0 left-0 right-0 z-20 flex flex-wrap items-start justify-between gap-2 p-3 lg:grid lg:grid-cols-[1fr_auto_1fr]">
       {/* SINISTRA: Brand + Energia + Item/min + Pausa */}
-      <div className="pointer-events-auto flex items-center gap-2.5 rounded-xl border border-zinc-800 bg-zinc-950/92 px-3 py-2 shadow-xl backdrop-blur">
+      <div className="pointer-events-auto flex items-center gap-2.5 justify-self-start rounded-xl border border-zinc-800 bg-zinc-950/92 px-3 py-2 shadow-xl backdrop-blur">
         <div className="flex items-center gap-2">
           <Factory className="h-5 w-5 text-amber-400" />
-          <span className="hidden text-sm font-bold tracking-wider text-amber-400 sm:inline">
+          <span className="hidden text-sm font-bold tracking-wider text-amber-400 xl:inline">
             FACTORY WEB
           </span>
         </div>
@@ -123,7 +124,7 @@ export function TopBar() {
           }`}
           title="Energia consumata / prodotta sulle reti collegate"
         >
-          <div className="flex items-center gap-1.5 font-mono text-xs font-semibold">
+          <div className="flex items-center gap-1.5 font-mono text-xs font-semibold tabular-nums">
             {powerStats.fuseBlown ? (
               <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
             ) : (
@@ -158,19 +159,19 @@ export function TopBar() {
           onMouseEnter={() => setShowRateMenu(true)}
           onMouseLeave={() => setShowRateMenu(false)}
         >
-          <div className="flex cursor-default flex-col gap-0.5 rounded-lg bg-zinc-900/90 px-2.5 py-1 transition hover:bg-zinc-800/90">
-            <div className="flex items-center gap-1.5 font-mono text-xs font-semibold text-sky-300">
+          <div className="flex min-w-[92px] cursor-default flex-col gap-0.5 rounded-lg bg-zinc-900/90 px-2.5 py-1 transition hover:bg-zinc-800/90">
+            <div className="flex items-center gap-1.5 font-mono text-xs font-semibold tabular-nums text-sky-300">
               <Activity className="h-3.5 w-3.5 text-sky-400" />
               <span>{factoryItemsPerMin}/min</span>
             </div>
-            <div className="font-mono text-[10px] text-zinc-400">
+            <div className="font-mono text-[10px] tabular-nums text-zinc-400">
               HUB: {hubItemsPerMin}/min
             </div>
           </div>
 
           {showRateMenu && (
             <div className="absolute top-full left-0 z-30 w-64 pt-2">
-              <div className="rounded-xl border border-zinc-700/90 bg-zinc-950/96 p-3 shadow-2xl backdrop-blur-xl space-y-2.5">
+              <div className="space-y-2.5 rounded-xl border border-zinc-700/90 bg-zinc-950/96 p-3 shadow-2xl backdrop-blur-xl">
                 <div className="border-b border-zinc-800 pb-2 text-xs font-bold text-sky-300">
                   Flusso Produzione Live
                 </div>
@@ -178,13 +179,13 @@ export function TopBar() {
                 <div className="grid grid-cols-2 gap-1.5 text-[11px]">
                   <div className="rounded bg-zinc-900 px-2 py-1.5">
                     <div className="text-[10px] text-zinc-500">Fabbrica</div>
-                    <div className="font-mono font-bold text-sky-300">
+                    <div className="font-mono font-bold tabular-nums text-sky-300">
                       {factoryItemsPerMin}/min
                     </div>
                   </div>
                   <div className="rounded bg-zinc-900 px-2 py-1.5">
                     <div className="text-[10px] text-zinc-500">Ingresso HUB</div>
-                    <div className="font-mono font-bold text-amber-300">
+                    <div className="font-mono font-bold tabular-nums text-amber-300">
                       {hubItemsPerMin}/min
                     </div>
                   </div>
@@ -214,7 +215,7 @@ export function TopBar() {
                               />
                               {meta.name}
                             </span>
-                            <span className="font-mono font-semibold text-emerald-400">
+                            <span className="font-mono font-semibold tabular-nums text-emerald-400">
                               +{rate}/min
                             </span>
                           </div>
@@ -232,7 +233,7 @@ export function TopBar() {
         <button
           onClick={togglePause}
           title="Pausa / Riprendi (Spazio)"
-          className={`flex h-9 w-9 items-center justify-center rounded-lg border transition ${
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition ${
             paused
               ? 'border-amber-400/60 bg-amber-500/20 text-amber-300'
               : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-600 hover:text-white'
@@ -246,9 +247,9 @@ export function TopBar() {
         </button>
       </div>
 
-      {/* CENTRO: Tracker Obiettivo HUB */}
+      {/* CENTRO: Tracker Obiettivo HUB (ancorato al centro) */}
       <div
-        className="pointer-events-auto relative"
+        className="pointer-events-auto relative justify-self-center"
         onMouseEnter={() => setShowGoalMenu(true)}
         onMouseLeave={() => setShowGoalMenu(false)}
       >
@@ -284,7 +285,7 @@ export function TopBar() {
               <div className="flex flex-wrap items-center gap-1.5">
                 {milestone.minPowerMW && (
                   <span
-                    className={`flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[11px] ${
+                    className={`flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[11px] tabular-nums ${
                       powerStats.producedMW >= milestone.minPowerMW
                         ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
                         : 'border-zinc-800 bg-zinc-900 text-zinc-300'
@@ -297,7 +298,7 @@ export function TopBar() {
 
                 {milestone.minItemsPerMin && (
                   <span
-                    className={`flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[11px] ${
+                    className={`flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[11px] tabular-nums ${
                       Math.max(factoryItemsPerMin, hubItemsPerMin) >=
                       milestone.minItemsPerMin
                         ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
@@ -317,7 +318,7 @@ export function TopBar() {
                   return (
                     <span
                       key={req.item}
-                      className={`flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[11px] ${
+                      className={`flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[11px] tabular-nums ${
                         done
                           ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
                           : 'border-zinc-800 bg-zinc-900 text-zinc-200'
@@ -348,7 +349,7 @@ export function TopBar() {
                   <span>Completa</span>
                 </button>
               ) : (
-                <span className="font-mono text-[11px] font-semibold text-zinc-400">
+                <span className="font-mono text-[11px] font-semibold tabular-nums text-zinc-400">
                   {milestonePct}%
                 </span>
               )}
@@ -381,7 +382,7 @@ export function TopBar() {
                     {milestone.tier} ({currentMilestoneIndex + 1}/
                     {HUB_MILESTONES.length})
                   </span>
-                  <span className="font-mono text-[11px] text-zinc-400">
+                  <span className="font-mono text-[11px] tabular-nums text-zinc-400">
                     {milestonePct}%
                   </span>
                 </div>
@@ -398,7 +399,7 @@ export function TopBar() {
                   <div className="space-y-1">
                     <div className="flex justify-between text-[11px]">
                       <span className="text-zinc-300">Potenza Rete</span>
-                      <span className="font-mono text-zinc-200">
+                      <span className="font-mono tabular-nums text-zinc-200">
                         {powerStats.producedMW} / {milestone.minPowerMW} MW
                       </span>
                     </div>
@@ -417,7 +418,7 @@ export function TopBar() {
                   <div className="space-y-1">
                     <div className="flex justify-between text-[11px]">
                       <span className="text-zinc-300">Ritmo Produzione</span>
-                      <span className="font-mono text-zinc-200">
+                      <span className="font-mono tabular-nums text-zinc-200">
                         {Math.max(factoryItemsPerMin, hubItemsPerMin)} /{' '}
                         {milestone.minItemsPerMin} item/min
                       </span>
@@ -452,7 +453,7 @@ export function TopBar() {
                           />
                           {meta.name} (HUB)
                         </span>
-                        <span className="font-mono text-zinc-300">
+                        <span className="font-mono tabular-nums text-zinc-300">
                           {have} / {req.count}
                         </span>
                       </div>
@@ -477,42 +478,63 @@ export function TopBar() {
         )}
       </div>
 
-      {/* DESTRA: Telemetria Cursore, Bioma e Cella */}
-      <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/92 px-3 py-2 text-xs shadow-xl backdrop-blur">
-        <MapPin className="h-3.5 w-3.5 text-zinc-400" />
-        <span className="font-mono text-zinc-300">
-          {validTile ? `X:${validTile.x} Y:${validTile.y}` : 'X:-- Y:--'}
-        </span>
-
-        {terrainMeta && (
-          <span className="flex items-center gap-1.5 rounded bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-200">
-            <span
-              className="h-2.5 w-2.5 rounded-full border border-white/20"
-              style={{ backgroundColor: terrainMeta.hex }}
-            />
-            <span>{terrainMeta.name}</span>
-            {!terrainMeta.buildable && (
-              <span className="text-[10px] text-red-400">(Bloccato)</span>
-            )}
+      {/* DESTRA: Telemetria Cursore con larghezza bloccata + riga secondaria per vene/edifici */}
+      <div className="pointer-events-none flex flex-col items-end gap-1.5 justify-self-end">
+        <div className="pointer-events-auto flex w-[284px] items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/92 px-3 py-2 text-xs shadow-xl backdrop-blur">
+          <MapPin className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+          <span className="w-[82px] shrink-0 font-mono tabular-nums text-zinc-300">
+            {validTile ? `X:${validTile.x} Y:${validTile.y}` : 'X:-- Y:--'}
           </span>
-        )}
 
-        {node && (
-          <span
-            className="rounded px-2 py-0.5 text-[11px] font-semibold text-zinc-950"
-            style={{ backgroundColor: RESOURCE_META[node.type].hex }}
+          <div
+            title={
+              terrainMeta
+                ? terrainMeta.buildable
+                  ? terrainMeta.name
+                  : `${terrainMeta.name} (non edificabile)`
+                : undefined
+            }
+            className="flex min-w-0 flex-1 items-center justify-between gap-1.5 rounded bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-200"
           >
-            {RESOURCE_META[node.type].name} · {PURITY_RATE[node.purity]}/min
-          </span>
-        )}
+            {terrainMeta ? (
+              <>
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-full border border-white/20"
+                    style={{ backgroundColor: terrainMeta.hex }}
+                  />
+                  <span className="truncate">{terrainMeta.name}</span>
+                </span>
+                {!terrainMeta.buildable && (
+                  <Lock className="h-3 w-3 shrink-0 text-red-400" />
+                )}
+              </>
+            ) : (
+              <span className="text-zinc-500">Fuori mappa</span>
+            )}
+          </div>
+        </div>
 
-        {building && buildingDef && (
-          <span className="rounded bg-zinc-800 px-2 py-0.5 text-[11px] text-amber-300">
-            {buildingDef.name}
-            {buildingDef.maxConnections > 0
-              ? ` (${world.getConnectionCount(building.id)}/${buildingDef.maxConnections})`
-              : ''}
-          </span>
+        {(node || (building && buildingDef)) && (
+          <div className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-zinc-800/90 bg-zinc-950/90 px-2.5 py-1 text-[11px] shadow-lg backdrop-blur">
+            {node && (
+              <span
+                className="rounded px-2 py-0.5 font-semibold text-zinc-950"
+                style={{ backgroundColor: RESOURCE_META[node.type].hex }}
+              >
+                {RESOURCE_META[node.type].name} · {PURITY_RATE[node.purity]}/min
+              </span>
+            )}
+
+            {building && buildingDef && (
+              <span className="rounded bg-zinc-800 px-2 py-0.5 text-amber-300">
+                {buildingDef.name}
+                {buildingDef.maxConnections > 0
+                  ? ` (${world.getConnectionCount(building.id)}/${buildingDef.maxConnections})`
+                  : ''}
+              </span>
+            )}
+          </div>
         )}
       </div>
     </div>

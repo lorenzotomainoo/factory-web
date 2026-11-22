@@ -1,6 +1,9 @@
 import {
   BUILDING_DEFS,
+  CRAFTING_BUILDING_TYPES,
   DIR_VECTORS,
+  isBeltType,
+  isMinerType,
   MAX_WIRE_DISTANCE,
   STARTER_INVENTORY,
   TERRAIN_META,
@@ -21,13 +24,17 @@ import {
 import {
   getDefaultRecipe,
   getRecipesForBuilding,
+  ITEM_META,
   RECIPES,
   RESOURCE_TO_ITEM,
 } from './recipes';
 
 const BELT_REPLACEABLE_TYPES = new Set<BuildingType>([
   'smelter',
+  'foundry',
   'constructor',
+  'assembler',
+  'manufacturer',
   'splitter',
   'merger',
 ]);
@@ -213,7 +220,6 @@ export class World {
       }
     }
 
-    // Garantisce che l'HUB centrale sia sempre presente
     const c = Math.floor(this.size / 2);
     if (!this.getBuilding(c, c)) {
       this.buildings.set(World.key(c, c), {
@@ -311,10 +317,24 @@ export class World {
     }
   }
 
+  /** Sostituzione di un nastro con un macchinario/splitter/merger o upgrade Nastro Mk.1 <-> Mk.2 */
   canReplaceBelt(type: BuildingType, x: number, y: number): boolean {
-    if (!BELT_REPLACEABLE_TYPES.has(type)) return false;
     const existing = this.getBuilding(x, y);
-    return existing?.type === 'belt';
+    if (!existing || !isBeltType(existing.type)) return false;
+    if (BELT_REPLACEABLE_TYPES.has(type)) return true;
+    if (isBeltType(type) && existing.type !== type) return true;
+    return false;
+  }
+
+  /** Upgrade/downgrade sul posto di un Miner Mk.1 <-> Mk.2 mantenendo i cavi */
+  canUpgradeMiner(type: BuildingType, x: number, y: number): boolean {
+    const existing = this.getBuilding(x, y);
+    if (!existing) return false;
+    return isMinerType(existing.type) && isMinerType(type) && existing.type !== type;
+  }
+
+  canUpgradeInPlace(type: BuildingType, x: number, y: number): boolean {
+    return this.canReplaceBelt(type, x, y) || this.canUpgradeMiner(type, x, y);
   }
 
   getPlacementDirection(
@@ -323,11 +343,58 @@ export class World {
     y: number,
     fallbackDir: Direction
   ): Direction {
-    if (this.canReplaceBelt(type, x, y)) {
-      const belt = this.getBuilding(x, y);
-      if (belt) return belt.dir;
+    if (this.canUpgradeInPlace(type, x, y)) {
+      const existing = this.getBuilding(x, y);
+      if (existing) return existing.dir;
     }
     return fallbackDir;
+  }
+
+  getPlacementError(type: BuildingType, x: number, y: number): string | null {
+    if (!this.inBounds(x, y)) return 'Fuori mappa';
+
+    const terrain = this.getTerrain(x, y);
+    if (!TERRAIN_META[terrain].buildable) {
+      return `${TERRAIN_META[terrain].name}: non edificabile`;
+    }
+
+    const def = BUILDING_DEFS[type];
+    const hasNode = Boolean(this.getNode(x, y));
+
+    if (def.requiresNode && !hasNode) {
+      return 'Va posizionato su una vena di minerale';
+    }
+    if (!def.requiresNode && hasNode) {
+      return 'Non costruibile sopra una vena';
+    }
+
+    const existing = this.getBuilding(x, y);
+    const upgrading = Boolean(existing && this.canUpgradeInPlace(type, x, y));
+    if (existing && !upgrading) {
+      return 'Cella occupata';
+    }
+
+    const refundMap = new Map<ItemType, number>();
+    if (upgrading && existing) {
+      for (const r of BUILDING_DEFS[existing.type].cost) {
+        refundMap.set(r.item, (refundMap.get(r.item) ?? 0) + r.count);
+      }
+    }
+
+    const missing: string[] = [];
+    for (const c of def.cost) {
+      const available =
+        this.getItemCount(c.item) + (refundMap.get(c.item) ?? 0);
+      if (available < c.count) {
+        missing.push(`${c.count - available} ${ITEM_META[c.item].shortName}`);
+      }
+    }
+
+    if (missing.length > 0) {
+      return `Mancano: ${missing.join(', ')}`;
+    }
+
+    return null;
   }
 
   canPlace(type: BuildingType, x: number, y: number): boolean {
@@ -340,11 +407,18 @@ export class World {
 
     const existing = this.getBuilding(x, y);
     if (existing) {
-      if (!this.canReplaceBelt(type, x, y)) return false;
-      return this.canAffordWithRefund(def.cost, BUILDING_DEFS.belt.cost);
+      if (!this.canUpgradeInPlace(type, x, y)) return false;
+      return this.canAffordWithRefund(def.cost, BUILDING_DEFS[existing.type].cost);
     }
 
     return this.canAfford(def.cost);
+  }
+
+  rotateBuilding(x: number, y: number): boolean {
+    const b = this.getBuilding(x, y);
+    if (!b || b.type === 'hub' || b.type === 'pole') return false;
+    b.dir = ((b.dir + 1) % 4) as Direction;
+    return true;
   }
 
   placeBuilding(
@@ -356,19 +430,25 @@ export class World {
     if (!this.canPlace(type, x, y)) return null;
 
     const existing = this.getBuilding(x, y);
-    const replacingBelt = Boolean(
-      existing && this.canReplaceBelt(type, x, y)
-    );
+    const upgradingMiner = Boolean(existing && this.canUpgradeMiner(type, x, y));
+    const replacingBelt = Boolean(existing && this.canReplaceBelt(type, x, y));
+    const upgrading = upgradingMiner || replacingBelt;
 
-    if (replacingBelt) {
-      this.refundCost(BUILDING_DEFS.belt.cost);
+    if (upgrading && existing) {
+      this.refundCost(BUILDING_DEFS[existing.type].cost);
     }
 
     if (!this.spendCost(BUILDING_DEFS[type].cost)) {
-      if (replacingBelt) {
-        this.spendCost(BUILDING_DEFS.belt.cost);
+      if (upgrading && existing) {
+        this.spendCost(BUILDING_DEFS[existing.type].cost);
       }
       return null;
+    }
+
+    // Upgrade Miner Mk.1 <-> Mk.2: preserva ID (cavi collegati), direzione e buffer
+    if (upgradingMiner && existing) {
+      existing.type = type;
+      return existing;
     }
 
     const finalDir = replacingBelt && existing ? existing.dir : dir;
@@ -383,9 +463,12 @@ export class World {
 
     if (replacingBelt && existing?.beltSlot) {
       const carried = existing.beltSlot;
-      if (type === 'splitter' || type === 'merger') {
+      if (isBeltType(type) || type === 'splitter' || type === 'merger') {
         beltSlot = { ...carried };
-      } else if (recipeId && RECIPES[recipeId]?.input.item === carried.item) {
+      } else if (
+        recipeId &&
+        RECIPES[recipeId]?.inputs.some((inp) => inp.item === carried.item)
+      ) {
         inputBuffer[carried.item] = 1;
       } else {
         this.addInventory(carried.item, 1);
@@ -418,7 +501,7 @@ export class World {
     y: number,
     existing: Building
   ): string | undefined {
-    if (type !== 'smelter' && type !== 'constructor') return undefined;
+    if (!CRAFTING_BUILDING_TYPES.has(type)) return undefined;
 
     const recipes = getRecipesForBuilding(type);
     const candidateItems: ItemType[] = [];
@@ -441,7 +524,7 @@ export class World {
 
       if (nb.beltSlot) {
         candidateItems.push(nb.beltSlot.item);
-      } else if (nb.type === 'miner') {
+      } else if (isMinerType(nb.type)) {
         const node = this.getNode(nb.x, nb.y);
         if (node) candidateItems.push(RESOURCE_TO_ITEM[node.type]);
       } else if (nb.recipeId && RECIPES[nb.recipeId]) {
@@ -450,7 +533,9 @@ export class World {
     }
 
     for (const item of candidateItems) {
-      const match = recipes.find((r) => r.input.item === item);
+      const match = recipes.find((r) =>
+        r.inputs.some((inp) => inp.item === item)
+      );
       if (match) return match.id;
     }
 
@@ -507,6 +592,47 @@ export class World {
     );
   }
 
+  getWireError(fromId: string | null, x: number, y: number): string | null {
+    if (!this.inBounds(x, y)) return null;
+    const target = this.getBuilding(x, y);
+
+    if (!fromId) {
+      if (!target) return null;
+      const maxT = BUILDING_DEFS[target.type].maxConnections;
+      if (maxT === 0) return 'Questo edificio non usa cavi';
+      if (this.getConnectionCount(target.id) >= maxT) {
+        return `Attacchi pieni (${maxT}/${maxT})`;
+      }
+      if (!this.canAfford(WIRE_COST)) return 'Manca: 1 Cable';
+      return null;
+    }
+
+    const start = this.getBuildingById(fromId);
+    if (!start) return null;
+
+    const dist = Math.hypot(x - start.x, y - start.y);
+    if (dist > MAX_WIRE_DISTANCE) {
+      return `Cavo troppo lungo (max ${MAX_WIRE_DISTANCE} celle)`;
+    }
+
+    if (!target || target.id === fromId) return null;
+    if (this.hasWireBetween(fromId, target.id)) return null;
+
+    const maxT = BUILDING_DEFS[target.type].maxConnections;
+    if (maxT === 0) return 'Questo edificio non accetta cavi';
+
+    const maxS = BUILDING_DEFS[start.type].maxConnections;
+    if (this.getConnectionCount(fromId) >= maxS) {
+      return `Origine piena (${maxS}/${maxS})`;
+    }
+    if (this.getConnectionCount(target.id) >= maxT) {
+      return `Attacchi pieni (${maxT}/${maxT})`;
+    }
+    if (!this.canAfford(WIRE_COST)) return 'Manca: 1 Cable';
+
+    return null;
+  }
+
   canConnect(idA: string, idB: string): boolean {
     if (idA === idB) return false;
     if (!this.canAfford(WIRE_COST)) return false;
@@ -559,8 +685,20 @@ export class World {
 
   setRecipe(x: number, y: number, recipeId: string): boolean {
     const b = this.getBuilding(x, y);
-    if (!b || (b.type !== 'smelter' && b.type !== 'constructor')) return false;
+    if (!b || !CRAFTING_BUILDING_TYPES.has(b.type)) return false;
     if (b.recipeId === recipeId) return false;
+
+    // Restituisce all'HUB eventuali materiali nei buffer prima di cambiare ricetta
+    if (b.inputBuffer) {
+      for (const [item, count] of Object.entries(b.inputBuffer)) {
+        if (count && count > 0) this.addInventory(item as ItemType, count);
+      }
+    }
+    if (b.outputBuffer) {
+      for (const [item, count] of Object.entries(b.outputBuffer)) {
+        if (count && count > 0) this.addInventory(item as ItemType, count);
+      }
+    }
 
     b.recipeId = recipeId;
     b.progress = 0;
@@ -621,11 +759,111 @@ export class World {
     }
   }
 
-  private addNode(x: number, y: number, type: ResourceType, purity: Purity) {
-    if (!this.inBounds(x, y)) return;
-    if (!this.isBuildableTerrain(x, y)) return;
-    if (this.getBuilding(x, y) || this.getNode(x, y)) return;
+  private addNode(x: number, y: number, type: ResourceType, purity: Purity): boolean {
+    if (!this.inBounds(x, y)) return false;
+    if (!this.isBuildableTerrain(x, y)) return false;
+    if (this.getBuilding(x, y) || this.getNode(x, y)) return false;
     this.nodes.set(World.key(x, y), { x, y, type, purity });
+    return true;
+  }
+
+  /** Piazza una vena garantita sulla prima cella edificabile libera attorno a (tx, ty) */
+  private addGuaranteedNodeNear(
+    tx: number,
+    ty: number,
+    type: ResourceType,
+    purity: Purity
+  ) {
+    for (let r = 0; r <= 12; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+          if (this.addNode(tx + dx, ty + dy, type, purity)) return;
+        }
+      }
+    }
+  }
+
+  private pickBiomeResource(
+    biome: TerrainType,
+    distHub: number,
+    roll: number
+  ): ResourceType {
+    // Anello vicino (20–30 celle): materiali base + carbone
+    if (distHub < 30) {
+      if (roll < 0.35) return 'iron';
+      if (roll < 0.62) return 'copper';
+      if (roll < 0.82) return 'limestone';
+      return 'coal';
+    }
+
+    // Anello medio (30–56 celle): entrano Caterium, Quarzo e Zolfo
+    if (distHub < 56) {
+      if (biome === 'desert' || biome === 'savanna') {
+        if (roll < 0.24) return 'copper';
+        if (roll < 0.48) return 'caterium';
+        if (roll < 0.68) return 'sulfur';
+        if (roll < 0.84) return 'iron';
+        return 'limestone';
+      }
+      if (biome === 'highland') {
+        if (roll < 0.30) return 'coal';
+        if (roll < 0.54) return 'iron';
+        if (roll < 0.76) return 'quartz';
+        return 'sulfur';
+      }
+      if (biome === 'forest') {
+        if (roll < 0.28) return 'coal';
+        if (roll < 0.52) return 'quartz';
+        if (roll < 0.76) return 'iron';
+        return 'copper';
+      }
+      if (roll < 0.24) return 'iron';
+      if (roll < 0.44) return 'copper';
+      if (roll < 0.60) return 'limestone';
+      if (roll < 0.76) return 'coal';
+      if (roll < 0.88) return 'caterium';
+      return 'quartz';
+    }
+
+    // Anello esterno (>56 celle): tutte le 9 risorse, inclusi Bauxite e Uranio
+    if (biome === 'highland') {
+      if (roll < 0.22) return 'uranium';
+      if (roll < 0.44) return 'bauxite';
+      if (roll < 0.64) return 'coal';
+      if (roll < 0.82) return 'quartz';
+      return 'sulfur';
+    }
+    if (biome === 'desert' || biome === 'savanna') {
+      if (roll < 0.26) return 'caterium';
+      if (roll < 0.48) return 'sulfur';
+      if (roll < 0.66) return 'bauxite';
+      if (roll < 0.82) return 'copper';
+      return 'iron';
+    }
+    if (biome === 'forest') {
+      if (roll < 0.26) return 'bauxite';
+      if (roll < 0.46) return 'coal';
+      if (roll < 0.64) return 'quartz';
+      if (roll < 0.76) return 'uranium';
+      if (roll < 0.88) return 'iron';
+      return 'copper';
+    }
+    if (biome === 'beach') {
+      if (roll < 0.32) return 'bauxite';
+      if (roll < 0.58) return 'limestone';
+      if (roll < 0.80) return 'caterium';
+      return 'copper';
+    }
+
+    if (roll < 0.20) return 'iron';
+    if (roll < 0.36) return 'copper';
+    if (roll < 0.50) return 'limestone';
+    if (roll < 0.64) return 'coal';
+    if (roll < 0.76) return 'caterium';
+    if (roll < 0.86) return 'quartz';
+    if (roll < 0.94) return 'bauxite';
+    return 'sulfur';
   }
 
   private generateStarterMap() {
@@ -637,6 +875,7 @@ export class World {
       }
     }
 
+    // HUB centrale
     this.buildings.set(World.key(c, c), {
       id: 'hub_main',
       type: 'hub',
@@ -645,6 +884,7 @@ export class World {
       dir: 1,
     });
 
+    // Giacimenti starter vicini all'HUB (Tier 0–3)
     this.addNode(c - 6, c - 2, 'iron', 'pure');
     this.addNode(c - 6, c + 1, 'iron', 'normal');
     this.addNode(c - 8, c + 3, 'iron', 'impure');
@@ -655,7 +895,17 @@ export class World {
     this.addNode(c - 2, c + 7, 'limestone', 'normal');
     this.addNode(c + 1, c + 8, 'limestone', 'pure');
 
-    const step = 18;
+    // Giacimenti garantiti a distanza crescente per la progressione Tier 4 → Tier 12
+    this.addGuaranteedNodeNear(c - 16, c - 14, 'coal', 'normal');
+    this.addGuaranteedNodeNear(c + 18, c + 14, 'coal', 'pure');
+    this.addGuaranteedNodeNear(c + 26, c - 18, 'caterium', 'normal');
+    this.addGuaranteedNodeNear(c - 26, c + 20, 'quartz', 'normal');
+    this.addGuaranteedNodeNear(c + 34, c + 26, 'sulfur', 'normal');
+    this.addGuaranteedNodeNear(c - 38, c - 28, 'bauxite', 'pure');
+    this.addGuaranteedNodeNear(c + 48, c - 38, 'uranium', 'normal');
+
+    // Generazione procedurale bilanciata su tutta la 256×256
+    const step = 16;
     for (let gy = 14; gy < this.size - 14; gy += step) {
       for (let gx = 14; gx < this.size - 14; gx += step) {
         const jx = gx + Math.floor(hash2D(gx, gy, this.seed + 19) * 10 - 5);
@@ -666,37 +916,21 @@ export class World {
         if (!this.isBuildableTerrain(jx, jy)) continue;
 
         const chance = hash2D(jx, jy, this.seed + 101);
-        if (chance > 0.38) continue;
+        if (chance > 0.42) continue;
 
         const biome = this.getTerrain(jx, jy);
         const roll = hash2D(jx, jy, this.seed + 211);
-
-        let resType: ResourceType = 'iron';
-        if (biome === 'highland') {
-          resType = roll < 0.5 ? 'coal' : 'iron';
-        } else if (biome === 'desert' || biome === 'savanna') {
-          resType = roll < 0.45 ? 'copper' : roll < 0.78 ? 'iron' : 'limestone';
-        } else if (biome === 'forest') {
-          resType = roll < 0.4 ? 'coal' : roll < 0.75 ? 'iron' : 'copper';
-        } else {
-          resType =
-            roll < 0.36
-              ? 'iron'
-              : roll < 0.62
-                ? 'copper'
-                : roll < 0.84
-                  ? 'limestone'
-                  : 'coal';
-        }
+        const resType = this.pickBiomeResource(biome, distHub, roll);
 
         const purityRoll =
           hash2D(jx, jy, this.seed + 307) + Math.min(0.25, distHub / 320);
         const purity: Purity =
-          purityRoll > 0.78 ? 'pure' : purityRoll > 0.38 ? 'normal' : 'impure';
+          purityRoll > 0.76 ? 'pure' : purityRoll > 0.36 ? 'normal' : 'impure';
 
         this.addNode(jx, jy, resType, purity);
 
-        if (hash2D(jx, jy, this.seed + 409) < 0.55) {
+        // Cluster da 2 vene (tranne l'Uranio che resta più raro)
+        if (resType !== 'uranium' && hash2D(jx, jy, this.seed + 409) < 0.5) {
           const ox = hash2D(jx, jy, this.seed + 503) < 0.5 ? 2 : -2;
           const oy = hash2D(jx, jy, this.seed + 601) < 0.5 ? 2 : -1;
           const secondPurity: Purity = purity === 'pure' ? 'normal' : purity;

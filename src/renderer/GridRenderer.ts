@@ -1,8 +1,12 @@
-import { Container, Graphics, Sprite, Texture } from 'pixi.js';
+import { Container, Graphics, Sprite, Text, Texture } from 'pixi.js';
+import { ITEM_META, RECIPES } from '../engine/recipes';
 import type { World } from '../engine/World';
 import {
   BUILDING_DEFS,
+  CRAFTING_BUILDING_TYPES,
   DIR_VECTORS,
+  isBeltType,
+  isMinerType,
   MAX_WIRE_DISTANCE,
   type Building,
   type BuildingType,
@@ -21,10 +25,9 @@ function feedsInto(neighbor: Building | undefined, dirToTarget: Direction): bool
   if (!neighbor) return false;
 
   if (
-    neighbor.type === 'belt' ||
-    neighbor.type === 'miner' ||
-    neighbor.type === 'smelter' ||
-    neighbor.type === 'constructor' ||
+    isBeltType(neighbor.type) ||
+    isMinerType(neighbor.type) ||
+    CRAFTING_BUILDING_TYPES.has(neighbor.type) ||
     neighbor.type === 'merger'
   ) {
     return neighbor.dir === dirToTarget;
@@ -97,7 +100,7 @@ export function getBeltItemPosition(
   const cx = b.x * TILE_SIZE + R;
   const cy = b.y * TILE_SIZE + R;
 
-  if (b.type !== 'belt') {
+  if (!isBeltType(b.type)) {
     return { x: cx, y: cy };
   }
 
@@ -222,21 +225,33 @@ export class GridRenderer {
   readonly root = new Container();
   private readonly terrainSprite: Sprite;
   private readonly gridLayer = new Graphics();
-  private readonly nodeLayer = new Graphics();
+  private readonly nodeLayer = new Container();
   private readonly buildingLayer = new Graphics();
+  private readonly hubLayer = new Container();
+  private readonly badgeLayer = new Container();
+  private readonly badgeBgLayer = new Graphics();
+  private readonly badgeTextLayer = new Container();
   private readonly wireLayer = new Graphics();
   private readonly ghostLayer = new Graphics();
   private readonly world: World;
 
+  private readonly nodeIcons: Graphics[] = [];
+  private hubIcon: Graphics | null = null;
+  private currentNodeScale = 1;
+  private currentHubScale = 1;
+
   constructor(world: World) {
     this.world = world;
     this.terrainSprite = this.buildTerrainSprite();
+    this.badgeLayer.addChild(this.badgeBgLayer, this.badgeTextLayer);
 
     this.root.addChild(
       this.terrainSprite,
       this.gridLayer,
       this.nodeLayer,
       this.buildingLayer,
+      this.hubLayer,
+      this.badgeLayer,
       this.wireLayer,
       this.ghostLayer
     );
@@ -244,6 +259,31 @@ export class GridRenderer {
     this.drawGrid();
     this.drawNodes();
     this.drawBuildings();
+  }
+
+  setAltIconsVisible(visible: boolean) {
+    this.badgeLayer.visible = visible;
+  }
+
+  /** Adatta griglia e dimensione icone di minerali + HUB in base allo zoom */
+  setZoomLevel(scale: number) {
+    const fade = clamp01((scale - 0.18) / 0.28);
+    this.gridLayer.alpha = fade;
+    this.gridLayer.visible = fade > 0.02;
+
+    // Più lo zoom scende sotto 1, più minerali e HUB si ingrandiscono (e viceversa)
+    const nodeScale = scale >= 1 ? 1 : Math.min(8.5, Math.pow(1 / scale, 0.88));
+    const hubScale = scale >= 1 ? 1 : Math.min(9.5, Math.pow(1 / scale, 0.92));
+
+    this.currentNodeScale = nodeScale;
+    this.currentHubScale = hubScale;
+
+    for (const icon of this.nodeIcons) {
+      icon.scale.set(nodeScale);
+    }
+    if (this.hubIcon) {
+      this.hubIcon.scale.set(hubScale);
+    }
   }
 
   private buildTerrainSprite(): Sprite {
@@ -360,17 +400,29 @@ export class GridRenderer {
   }
 
   private drawNodes() {
-    const g = this.nodeLayer;
-    g.clear();
+    for (const child of this.nodeLayer.removeChildren()) {
+      child.destroy();
+    }
+    this.nodeIcons.length = 0;
 
     for (const node of this.world.nodes.values()) {
-      this.drawResourceNode(g, node);
+      const icon = new Graphics();
+      icon.position.set(
+        node.x * TILE_SIZE + TILE_SIZE / 2,
+        node.y * TILE_SIZE + TILE_SIZE / 2
+      );
+      this.drawResourceNodeLocal(icon, node);
+      icon.scale.set(this.currentNodeScale);
+
+      this.nodeLayer.addChild(icon);
+      this.nodeIcons.push(icon);
     }
   }
 
-  private drawResourceNode(g: Graphics, node: ResourceNode) {
-    const cx = node.x * TILE_SIZE + TILE_SIZE / 2;
-    const cy = node.y * TILE_SIZE + TILE_SIZE / 2 - 1;
+  /** Disegna il giacimento centrato su (0, 0) così scala perfettamente sul centro della cella */
+  private drawResourceNodeLocal(g: Graphics, node: ResourceNode) {
+    const cx = 0;
+    const cy = -1;
     const flip = (node.x * 7 + node.y * 13) % 2 === 0 ? 1 : -1;
 
     const poly = (pts: [number, number][]) =>
@@ -383,7 +435,17 @@ export class GridRenderer {
           ? 0x231917
           : node.type === 'limestone'
             ? 0x242320
-            : 0x1b212e;
+            : node.type === 'caterium'
+              ? 0x29220e
+              : node.type === 'quartz'
+                ? 0x2a1425
+                : node.type === 'sulfur'
+                  ? 0x26260f
+                  : node.type === 'bauxite'
+                    ? 0x2e1319
+                    : node.type === 'uranium'
+                      ? 0x0f2617
+                      : 0x1b212e;
 
     g.poly(
       poly([
@@ -401,12 +463,14 @@ export class GridRenderer {
       .stroke({
         width: node.purity === 'pure' ? 2 : 1.3,
         color:
-          node.purity === 'pure'
-            ? 0xfacc15
-            : node.purity === 'normal'
-              ? 0xe2e8f0
-              : 0x71717a,
-        alpha: node.purity === 'pure' ? 0.85 : 0.55,
+          node.type === 'uranium'
+            ? 0x4ade80
+            : node.purity === 'pure'
+              ? 0xfacc15
+              : node.purity === 'normal'
+                ? 0xe2e8f0
+                : 0x71717a,
+        alpha: node.purity === 'pure' || node.type === 'uranium' ? 0.85 : 0.55,
       });
 
     if (node.type === 'iron') {
@@ -606,6 +670,226 @@ export class GridRenderer {
       )
         .fill({ color: 0x1e293b })
         .stroke({ width: 1.1, color: 0x64748b });
+    } else if (node.type === 'caterium') {
+      g.poly(
+        poly([
+          [-14, 6],
+          [-11, -8],
+          [0, -13],
+          [12, -6],
+          [12, 6],
+          [0, 11],
+        ])
+      )
+        .fill({ color: 0x422006 })
+        .stroke({ width: 1.4, color: 0x1c1004 });
+
+      g.poly(
+        poly([
+          [-10, -5],
+          [-1, -12],
+          [9, -5],
+          [3, 2],
+          [-6, 1],
+        ])
+      ).fill({ color: 0xeab308 });
+
+      g.poly(
+        poly([
+          [-6, -6],
+          [0, -10],
+          [5, -5],
+          [-1, -2],
+        ])
+      ).fill({ color: 0xfef08a, alpha: 0.92 });
+
+      g.poly(
+        poly([
+          [2, 2],
+          [10, -2],
+          [9, 6],
+          [2, 8],
+        ])
+      ).fill({ color: 0xfacc15 });
+
+      g.poly(
+        poly([
+          [-13, 5],
+          [-7, 1],
+          [-4, 8],
+          [-10, 10],
+        ])
+      ).fill({ color: 0xfde047 });
+    } else if (node.type === 'quartz') {
+      g.poly(
+        poly([
+          [-13, 8],
+          [-14, -4],
+          [-7, -14],
+          [-2, -3],
+          [-4, 8],
+        ])
+      )
+        .fill({ color: 0xdb2777 })
+        .stroke({ width: 1.2, color: 0x500724 });
+
+      g.poly(
+        poly([
+          [-4, 9],
+          [-3, -6],
+          [3, -15],
+          [9, -5],
+          [7, 9],
+        ])
+      )
+        .fill({ color: 0xf472b6 })
+        .stroke({ width: 1.3, color: 0x831843 });
+
+      g.poly(
+        poly([
+          [0, -13],
+          [3, -14],
+          [6, -5],
+          [2, -2],
+        ])
+      ).fill({ color: 0xfce7f3, alpha: 0.9 });
+
+      g.poly(
+        poly([
+          [5, 8],
+          [8, -2],
+          [14, -7],
+          [14, 5],
+        ])
+      )
+        .fill({ color: 0xf9a8d4 })
+        .stroke({ width: 1.1, color: 0x831843 });
+    } else if (node.type === 'sulfur') {
+      g.poly(
+        poly([
+          [-14, 6],
+          [-10, -8],
+          [2, -13],
+          [13, -5],
+          [12, 7],
+          [-2, 10],
+        ])
+      )
+        .fill({ color: 0xa16207 })
+        .stroke({ width: 1.4, color: 0x262605 });
+
+      g.poly(
+        poly([
+          [-10, -5],
+          [1, -11],
+          [10, -4],
+          [3, 4],
+          [-8, 3],
+        ])
+      ).fill({ color: 0xded82a });
+
+      g.poly(
+        poly([
+          [-5, -6],
+          [2, -9],
+          [6, -3],
+          [-2, -1],
+        ])
+      ).fill({ color: 0xfef9c3, alpha: 0.9 });
+
+      g.poly(
+        poly([
+          [-13, 6],
+          [-7, 2],
+          [-3, 9],
+          [-10, 10],
+        ])
+      ).fill({ color: 0xfde047 });
+    } else if (node.type === 'bauxite') {
+      g.poly(
+        poly([
+          [-15, 6],
+          [-12, -6],
+          [0, -12],
+          [13, -5],
+          [14, 6],
+          [1, 10],
+        ])
+      )
+        .fill({ color: 0x881337 })
+        .stroke({ width: 1.4, color: 0x2b0712 });
+
+      g.poly(
+        poly([
+          [-11, -3],
+          [-2, -10],
+          [10, -4],
+          [6, 3],
+          [-8, 4],
+        ])
+      ).fill({ color: 0xe11d48 });
+
+      g.poly(
+        poly([
+          [-6, -5],
+          [0, -9],
+          [6, -4],
+          [0, -1],
+        ])
+      ).fill({ color: 0xfda4af, alpha: 0.85 });
+
+      g.poly(
+        poly([
+          [-12, 6],
+          [-5, 2],
+          [3, 6],
+          [-6, 10],
+        ])
+      ).fill({ color: 0xfb7185 });
+    } else if (node.type === 'uranium') {
+      g.poly(
+        poly([
+          [-14, 6],
+          [-12, -7],
+          [-1, -13],
+          [11, -7],
+          [13, 5],
+          [2, 10],
+        ])
+      )
+        .fill({ color: 0x14532d })
+        .stroke({ width: 1.5, color: 0x4ade80 });
+
+      g.poly(
+        poly([
+          [-9, 3],
+          [-7, -10],
+          [-2, -13],
+          [1, -3],
+          [-3, 5],
+        ])
+      ).fill({ color: 0x22c55e });
+
+      g.poly(
+        poly([
+          [1, 6],
+          [3, -8],
+          [9, -11],
+          [11, 2],
+          [5, 7],
+        ])
+      ).fill({ color: 0x4ade80 });
+
+      g.poly(
+        poly([
+          [-5, -7],
+          [-2, -11],
+          [0, -4],
+          [-3, -2],
+        ])
+      ).fill({ color: 0xdcfce7, alpha: 0.9 });
+
+      g.circle(cx, cy, 4).fill({ color: 0x86efac, alpha: 0.45 });
     }
 
     const pips =
@@ -618,14 +902,14 @@ export class GridRenderer {
           : 0xa1a1aa;
 
     const barW = pips * 7 + 6;
-    const barY = node.y * TILE_SIZE + TILE_SIZE - 9;
+    const barY = TILE_SIZE / 2 - 9;
 
-    g.roundRect(cx - barW / 2, barY - 3.5, barW, 7, 3.5)
+    g.roundRect(-barW / 2, barY - 3.5, barW, 7, 3.5)
       .fill({ color: 0x09090b, alpha: 0.85 })
       .stroke({ width: 1, color: pipColor, alpha: 0.5 });
 
     for (let i = 0; i < pips; i++) {
-      const px = cx + (i - (pips - 1) / 2) * 7;
+      const px = (i - (pips - 1) / 2) * 7;
       g.circle(px, barY, 2).fill({ color: pipColor });
     }
   }
@@ -634,11 +918,81 @@ export class GridRenderer {
     const g = this.buildingLayer;
     g.clear();
 
+    for (const child of this.hubLayer.removeChildren()) {
+      child.destroy();
+    }
+    this.hubIcon = null;
+
     for (const b of this.world.buildings.values()) {
+      if (b.type === 'hub') {
+        const hub = new Graphics();
+        const def = BUILDING_DEFS.hub;
+        const half = TILE_SIZE / 2;
+        const pad = 2;
+
+        hub
+          .roundRect(-half + pad, -half + pad, TILE_SIZE - pad * 2, TILE_SIZE - pad * 2, 6)
+          .fill({ color: def.color })
+          .stroke({ width: 2, color: def.accent });
+        hub
+          .roundRect(-half + 11, -half + 11, TILE_SIZE - 22, TILE_SIZE - 22, 3)
+          .fill({ color: 0x18181b });
+        hub.circle(0, 0, 5).fill({ color: 0xfef08a });
+
+        hub.position.set(b.x * TILE_SIZE + half, b.y * TILE_SIZE + half);
+        hub.scale.set(this.currentHubScale);
+
+        this.hubLayer.addChild(hub);
+        this.hubIcon = hub;
+        continue;
+      }
+
       this.drawBuildingShape(g, b.type, b.x, b.y, b.dir, 1);
     }
 
+    this.drawRecipeBadges();
     this.drawWires();
+  }
+
+  /** Disegna il badge Alt-Mode del prodotto sopra tutte le macchine di crafting */
+  private drawRecipeBadges() {
+    const bg = this.badgeBgLayer;
+    bg.clear();
+
+    for (const child of this.badgeTextLayer.removeChildren()) {
+      child.destroy();
+    }
+
+    for (const b of this.world.buildings.values()) {
+      if (!CRAFTING_BUILDING_TYPES.has(b.type)) continue;
+      if (!b.recipeId) continue;
+
+      const recipe = RECIPES[b.recipeId];
+      if (!recipe) continue;
+
+      const outItem = recipe.output.item;
+      const meta = ITEM_META[outItem];
+
+      const bx = b.x * TILE_SIZE + 15;
+      const by = b.y * TILE_SIZE + TILE_SIZE - 13;
+
+      bg.roundRect(bx - 10, by - 7.5, 20, 15, 4)
+        .fill({ color: 0x09090b, alpha: 0.9 })
+        .stroke({ width: 1.5, color: meta.color, alpha: 0.95 });
+
+      const label = new Text({
+        text: meta.badge,
+        style: {
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          fontSize: 9.5,
+          fontWeight: 'bold',
+          fill: meta.hex,
+        },
+      });
+      label.anchor.set(0.5);
+      label.position.set(bx, by);
+      this.badgeTextLayer.addChild(label);
+    }
   }
 
   drawWires() {
@@ -785,14 +1139,13 @@ export class GridRenderer {
       tile.y,
       rotation
     );
-    const snappingOnBelt = this.world.canReplaceBelt(
+    const upgradingInPlace = this.world.canUpgradeInPlace(
       selectedBuilding,
       tile.x,
       tile.y
     );
 
-    // Cornice luminosa di aggancio quando sostituisci un pezzo di nastro
-    if (snappingOnBelt) {
+    if (upgradingInPlace) {
       g.roundRect(px + 1, py + 1, TILE_SIZE - 2, TILE_SIZE - 2, 7).stroke({
         width: 2.5,
         color: valid ? 0x4ade80 : 0xf87171,
@@ -811,10 +1164,9 @@ export class GridRenderer {
     );
 
     if (
-      snappingOnBelt ||
-      selectedBuilding === 'miner' ||
-      selectedBuilding === 'smelter' ||
-      selectedBuilding === 'constructor'
+      upgradingInPlace ||
+      isMinerType(selectedBuilding) ||
+      CRAFTING_BUILDING_TYPES.has(selectedBuilding)
     ) {
       const v = DIR_VECTORS[effectiveDir];
       const outX =
@@ -835,6 +1187,7 @@ export class GridRenderer {
 
   private drawBelt(
     g: Graphics,
+    type: BuildingType,
     tx: number,
     ty: number,
     outDir: Direction,
@@ -847,7 +1200,8 @@ export class GridRenderer {
     const cx = px + TILE_SIZE / 2;
     const cy = py + TILE_SIZE / 2;
     const halfW = BELT_WIDTH / 2;
-    const railCol = 0x18181b;
+    const isMk2 = type === 'belt_mk2';
+    const railCol = isMk2 ? 0x0c4a6e : 0x18181b;
 
     const inSide = getBeltInputSide(this.world, tx, ty, outDir);
 
@@ -874,7 +1228,13 @@ export class GridRenderer {
           .stroke({ width: 2, color: railCol, alpha });
       }
 
-      this.drawArrow(g, cx, cy, outDir, 8.5, accentCol, alpha);
+      if (isMk2) {
+        const v = DIR_VECTORS[outDir];
+        this.drawArrow(g, cx - v.dx * 7, cy - v.dy * 7, outDir, 7, accentCol, alpha);
+        this.drawArrow(g, cx + v.dx * 7, cy + v.dy * 7, outDir, 7, accentCol, alpha);
+      } else {
+        this.drawArrow(g, cx, cy, outDir, 8.5, accentCol, alpha);
+      }
       return;
     }
 
@@ -918,12 +1278,20 @@ export class GridRenderer {
     }
     g.stroke({ width: 2, color: railCol, alpha });
 
-    const midAngle = startAngle + delta * 0.5;
-    const arrowX = cornerX + Math.cos(midAngle) * radius;
-    const arrowY = cornerY + Math.sin(midAngle) * radius;
-    const tangentAngle = midAngle + (delta > 0 ? Math.PI / 2 : -Math.PI / 2);
+    const drawCurveArrow = (t: number, size: number) => {
+      const angle = startAngle + delta * t;
+      const ax = cornerX + Math.cos(angle) * radius;
+      const ay = cornerY + Math.sin(angle) * radius;
+      const tangent = angle + (delta > 0 ? Math.PI / 2 : -Math.PI / 2);
+      this.drawArrowAtAngle(g, ax, ay, tangent, size, accentCol, alpha);
+    };
 
-    this.drawArrowAtAngle(g, arrowX, arrowY, tangentAngle, 8.5, accentCol, alpha);
+    if (isMk2) {
+      drawCurveArrow(0.32, 6.8);
+      drawCurveArrow(0.68, 6.8);
+    } else {
+      drawCurveArrow(0.5, 8.5);
+    }
   }
 
   private drawBuildingShape(
@@ -943,8 +1311,8 @@ export class GridRenderer {
     const fillCol = tintOverride ?? def.color;
     const accentCol = tintOverride ?? def.accent;
 
-    if (type === 'belt') {
-      this.drawBelt(g, tx, ty, dir, fillCol, accentCol, alpha);
+    if (isBeltType(type)) {
+      this.drawBelt(g, type, tx, ty, dir, fillCol, accentCol, alpha);
       return;
     }
 
@@ -956,7 +1324,7 @@ export class GridRenderer {
       return;
     }
 
-    const pad = type === 'hub' ? 2 : 5;
+    const pad = type === 'hub' || type === 'manufacturer' || type === 'nuclear_gen' ? 2 : 5;
     g.roundRect(px + pad, py + pad, TILE_SIZE - pad * 2, TILE_SIZE - pad * 2, 6)
       .fill({ color: fillCol, alpha })
       .stroke({ width: 2, color: accentCol, alpha });
@@ -967,7 +1335,7 @@ export class GridRenderer {
         alpha,
       });
       g.circle(cx, cy, 5).fill({ color: 0xfef08a, alpha });
-    } else if (type === 'miner') {
+    } else if (isMinerType(type)) {
       const v = DIR_VECTORS[dir];
       const bx = cx + v.dx * (TILE_SIZE / 2 - 4);
       const by = cy + v.dy * (TILE_SIZE / 2 - 4);
@@ -979,8 +1347,39 @@ export class GridRenderer {
         isVert ? 8 : 16
       ).fill({ color: 0x18181b, alpha });
 
-      g.circle(cx, cy, 9).fill({ color: 0x18181b, alpha: alpha * 0.85 });
-      g.circle(cx, cy, 4).fill({ color: accentCol, alpha });
+      g.circle(cx, cy, 10).fill({ color: 0x18181b, alpha: alpha * 0.88 });
+      if (type === 'miner_mk2') {
+        g.circle(cx, cy, 7.5).stroke({ width: 1.8, color: accentCol, alpha });
+        g.circle(cx, cy, 3.5).fill({ color: 0xffffff, alpha });
+      } else {
+        g.circle(cx, cy, 4).fill({ color: accentCol, alpha });
+      }
+    } else if (type === 'coal_gen') {
+      g.circle(cx - 7, cy - 5, 5.5)
+        .fill({ color: 0x18181b, alpha })
+        .stroke({ width: 1.5, color: accentCol, alpha });
+      g.circle(cx + 7, cy - 5, 5.5)
+        .fill({ color: 0x18181b, alpha })
+        .stroke({ width: 1.5, color: accentCol, alpha });
+      g.roundRect(cx - 10, cy + 4, 20, 7, 2).fill({ color: accentCol, alpha: alpha * 0.9 });
+    } else if (type === 'nuclear_gen') {
+      g.circle(cx, cy, 13)
+        .fill({ color: 0x052e16, alpha })
+        .stroke({ width: 2, color: accentCol, alpha });
+      g.circle(cx, cy, 6).fill({ color: 0x86efac, alpha });
+      g.circle(cx, cy, 2.5).fill({ color: 0x052e16, alpha });
+    } else if (type === 'foundry' || type === 'assembler' || type === 'manufacturer') {
+      g.roundRect(px + 9, py + 9, TILE_SIZE - 18, TILE_SIZE - 18, 4).fill({
+        color: 0x09090b,
+        alpha: alpha * 0.32,
+      });
+      this.drawArrow(g, cx, cy, dir, 10.5, accentCol, alpha);
+
+      const dotCount = type === 'manufacturer' ? 3 : 2;
+      for (let i = 0; i < dotCount; i++) {
+        const dx = (i - (dotCount - 1) / 2) * 7;
+        g.circle(cx + dx, py + 9.5, 2).fill({ color: accentCol, alpha });
+      }
     } else {
       this.drawArrow(g, cx, cy, dir, 11, accentCol, alpha);
     }
